@@ -187,7 +187,6 @@ export class WebHaptics {
 
     const hapticLabel = document.createElement("label");
     hapticLabel.setAttribute("for", id);
-    hapticLabel.style.display = "none";
     hapticLabel.textContent = "Haptic feedback";
     this.hapticLabel = hapticLabel;
 
@@ -195,7 +194,32 @@ export class WebHaptics {
     hapticCheckbox.type = "checkbox";
     hapticCheckbox.setAttribute("switch", "");
     hapticCheckbox.id = id;
-    hapticCheckbox.style.display = "none";
+
+    if (this.debug) {
+      Object.assign(hapticLabel.style, {
+        position: "fixed",
+        bottom: "16px",
+        right: "16px",
+        zIndex: "2147483647",
+        display: "flex",
+        alignItems: "center",
+        gap: "8px",
+        padding: "8px 12px",
+        background: "rgba(0, 0, 0, 0.8)",
+        color: "#fff",
+        borderRadius: "8px",
+        fontSize: "13px",
+        fontFamily: "system-ui, sans-serif",
+        cursor: "pointer",
+        userSelect: "none",
+      });
+      Object.assign(hapticCheckbox.style, {
+        all: "initial",
+      });
+    } else {
+      hapticLabel.style.display = "none";
+      hapticCheckbox.style.display = "none";
+    }
 
     hapticLabel.appendChild(hapticCheckbox);
     document.body.appendChild(hapticLabel);
