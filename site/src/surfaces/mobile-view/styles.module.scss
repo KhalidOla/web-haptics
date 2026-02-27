@@ -52,13 +52,11 @@
 }
 
 .toggleGroup {
-  padding: 0 0 2rem;
 }
 .installation {
   display: flex;
   flex-direction: column;
   gap: 1rem;
-  padding: 2rem 0;
 
   --body-light: var(--body);
 }

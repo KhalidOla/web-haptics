@@ -10,6 +10,7 @@ import { SafariBar } from "./safari-bar";
 import { useState } from "react";
 import { InstallCommands } from "../installation";
 import { Usage } from "../usage";
+import { motion } from "motion/react";
 
 export default function MobileView({
   disabled,
@@ -57,13 +58,20 @@ export default function MobileView({
           </div>
         )}
 
-        {view === "play" && <Demo setShaking={setShaking} />}
-        {view === "install" && (
-          <div className={styles.installation}>
-            <InstallCommands />
-            <Usage />
-          </div>
-        )}
+        <motion.div
+          key={view}
+          initial={{ x: view === "play" ? -8 : 8 }}
+          animate={{ x: 0 }}
+          transition={{ duration: 0.1, ease: "easeOut" }}
+        >
+          {view === "play" && <Demo setShaking={setShaking} />}
+          {view === "install" && (
+            <div className={styles.installation}>
+              <InstallCommands />
+              <Usage />
+            </div>
+          )}
+        </motion.div>
       </div>
 
       {disabled && (

@@ -1,6 +1,9 @@
 .container {
   position: relative;
   width: 100%;
+  border-radius: 0.75rem;
+  corner-shape: superellipse(1.25);
+  overflow: hidden;
 
   .copy {
     z-index: 99;
@@ -26,8 +29,6 @@
     padding: 1rem 1.25rem;
     color: var(--color);
     background-color: var(--body-light);
-    border-radius: 0.75rem;
-    corner-shape: superellipse(1.25);
     overflow: hidden;
     font-size: 0.8125rem;
     line-height: 1.4;

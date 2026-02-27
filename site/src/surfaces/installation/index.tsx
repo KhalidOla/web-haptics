@@ -7,6 +7,7 @@ import { TextMorph } from "torph/react";
 
 import { CodeBlock } from "../../components/codeblock";
 import { useApp } from "../../context/app";
+import { Toggle, ToggleGroup } from "../../components/toggle";
 
 const pkgCmds = {
   npm: "npm i web-haptics",
@@ -22,21 +23,20 @@ export const InstallCommands = () => {
   const [cmdIndex, setCmdIndex] = useState(0);
   return (
     <div className={styles.install}>
-      <div className={styles.commands}>
-        {Object.keys(pkgCmds).map((cmd, i) => (
-          <button
-            key={cmd}
-            onClick={() => {
-              if (i === cmdIndex) return;
-              setCmdIndex(i);
-              trigger();
-            }}
-            data-active={i === cmdIndex}
-          >
-            {cmd}
-          </button>
-        ))}
+      <div className={styles.toggleGroup}>
+        <ToggleGroup>
+          {Object.keys(pkgCmds).map((cmd, i) => (
+            <Toggle
+              key={cmd}
+              active={i === cmdIndex}
+              onClick={() => setCmdIndex(i)}
+            >
+              {cmd}
+            </Toggle>
+          ))}
+        </ToggleGroup>
       </div>
+
       <div className={styles.cmd}>
         <CodeBlock
           code={pkgCmds[Object.keys(pkgCmds)[cmdIndex] as keyof typeof pkgCmds]}
