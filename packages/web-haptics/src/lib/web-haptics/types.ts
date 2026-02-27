@@ -6,7 +6,7 @@ export interface HapticPreset {
   intensity: number;
 }
 
-export type HapticInput = number | HapticPattern | HapticPreset;
+export type HapticInput = number | string | HapticPattern | HapticPreset;
 
 export interface TriggerOptions {
   intensity?: number;

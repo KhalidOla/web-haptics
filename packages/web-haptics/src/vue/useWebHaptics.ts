@@ -28,7 +28,7 @@ export function useWebHaptics(options?: WebHapticsOptions) {
   const trigger = (input?: HapticInput, options?: TriggerOptions) =>
     instance?.trigger(input, options);
   const cancel = () => instance?.cancel();
-  const isSupported = WebHaptics.isSupported();
+  const isSupported = WebHaptics.isSupported;
 
   return { trigger, cancel, isSupported };
 }

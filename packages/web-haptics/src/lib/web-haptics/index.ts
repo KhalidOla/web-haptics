@@ -52,18 +52,17 @@ export class WebHaptics {
   private rafId: number | null = null;
   private patternResolve: (() => void) | null = null;
   private audioCtx: AudioContext | null = null;
+  private audioFilter: BiquadFilterNode | null = null;
+  private audioGain: GainNode | null = null;
 
   constructor(options?: WebHapticsOptions) {
     this.instanceId = ++instanceCounter;
     this.debug = options?.debug ?? false;
   }
 
-  static isSupported(): boolean {
-    return (
-      typeof navigator !== "undefined" &&
-      typeof navigator.vibrate === "function"
-    );
-  }
+  static readonly isSupported: boolean =
+    typeof navigator !== "undefined" &&
+    typeof navigator.vibrate === "function";
 
   async trigger(
     input: HapticInput = [10],
@@ -74,8 +73,17 @@ export class WebHaptics {
 
     if (typeof input === "number") {
       pattern = [input];
+    } else if (typeof input === "string") {
+      const preset =
+        defaultPatterns[input as keyof typeof defaultPatterns];
+      if (!preset) {
+        console.warn(`[web-haptics] Unknown preset: "${input}"`);
+        return;
+      }
+      pattern = [...preset.pattern];
+      defaultIntensity = preset.intensity;
     } else if (Array.isArray(input)) {
-      pattern = input;
+      pattern = [...input];
     } else {
       pattern = [...input.pattern];
       defaultIntensity = input.intensity;
@@ -98,11 +106,11 @@ export class WebHaptics {
       }
     }
 
-    if (WebHaptics.isSupported()) {
+    if (WebHaptics.isSupported) {
       navigator.vibrate(modulatePattern(pattern, intensity));
     }
 
-    if (!WebHaptics.isSupported() || this.debug) {
+    if (!WebHaptics.isSupported || this.debug) {
       this.ensureDOM();
       if (!this.hapticLabel) return;
 
@@ -117,7 +125,7 @@ export class WebHaptics {
 
   cancel(): void {
     this.stopPattern();
-    if (WebHaptics.isSupported()) {
+    if (WebHaptics.isSupported) {
       navigator.vibrate(0);
     }
   }
@@ -132,6 +140,8 @@ export class WebHaptics {
     if (this.audioCtx) {
       this.audioCtx.close();
       this.audioCtx = null;
+      this.audioFilter = null;
+      this.audioGain = null;
     }
   }
 
@@ -166,6 +176,8 @@ export class WebHaptics {
       if (this.audioCtx) {
         this.audioCtx.close();
         this.audioCtx = null;
+        this.audioFilter = null;
+        this.audioGain = null;
       }
     }
   }
@@ -191,6 +203,7 @@ export class WebHaptics {
       }
       const totalDuration = cumulative;
 
+      const toggleInterval = TOGGLE_MIN + (1 - intensity) * TOGGLE_MAX;
       let startTime = 0;
       let lastToggleTime = 0;
 
@@ -214,7 +227,6 @@ export class WebHaptics {
         }
 
         if (phaseIndex % 2 === 0) {
-          const toggleInterval = TOGGLE_MIN + (1 - intensity) * TOGGLE_MAX;
           if (time - lastToggleTime >= toggleInterval) {
             this.hapticLabel?.click();
             if (this.debug && this.audioCtx) {
@@ -231,9 +243,9 @@ export class WebHaptics {
   }
 
   private playClick(intensity: number): void {
-    if (!this.audioCtx) return;
+    if (!this.audioCtx || !this.audioFilter || !this.audioGain) return;
 
-    const duration = 0.008 * 0.5;
+    const duration = 0.004;
     const buffer = this.audioCtx.createBuffer(
       1,
       this.audioCtx.sampleRate * duration,
@@ -241,29 +253,29 @@ export class WebHaptics {
     );
     const data = buffer.getChannelData(0);
     for (let i = 0; i < data.length; i++) {
-      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (50 * 0.5));
+      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / 25);
     }
+
+    this.audioGain.gain.value = 0.5 * intensity;
 
     const source = this.audioCtx.createBufferSource();
     source.buffer = buffer;
-
-    const filter = this.audioCtx.createBiquadFilter();
-    filter.type = "bandpass";
-    filter.frequency.value = 4000;
-    filter.Q.value = 8;
-
-    const gain = this.audioCtx.createGain();
-    gain.gain.value = 0.5 * intensity;
-
-    source.connect(filter);
-    filter.connect(gain);
-    gain.connect(this.audioCtx.destination);
+    source.connect(this.audioFilter);
     source.start();
   }
 
   private async ensureAudio(): Promise<void> {
     if (!this.audioCtx && typeof AudioContext !== "undefined") {
       this.audioCtx = new AudioContext();
+
+      this.audioFilter = this.audioCtx.createBiquadFilter();
+      this.audioFilter.type = "bandpass";
+      this.audioFilter.frequency.value = 4000;
+      this.audioFilter.Q.value = 8;
+
+      this.audioGain = this.audioCtx.createGain();
+      this.audioFilter.connect(this.audioGain);
+      this.audioGain.connect(this.audioCtx.destination);
     }
     if (this.audioCtx?.state === "suspended") {
       await this.audioCtx.resume();

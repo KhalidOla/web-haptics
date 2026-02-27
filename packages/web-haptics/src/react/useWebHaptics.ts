@@ -31,7 +31,7 @@ export function useWebHaptics(options?: WebHapticsOptions) {
 
   const cancel = useCallback(() => instanceRef.current?.cancel(), []);
 
-  const isSupported = WebHaptics.isSupported();
+  const isSupported = WebHaptics.isSupported;
 
   return { trigger, cancel, isSupported };
 }
