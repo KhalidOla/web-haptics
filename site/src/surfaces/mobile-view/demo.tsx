@@ -68,7 +68,7 @@ export const Demo = ({
             <button
               data-pattern={name}
               aria-description={pattern.description}
-              onPointerDown={(e) => {
+              onClick={(e) => {
                 handleTrigger(name, pattern, e.clientX, e.clientY);
               }}
             >

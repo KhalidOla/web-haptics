@@ -47,7 +47,7 @@ export const useParticles = () => {
 };
 
 const MAX_ACTIVE = 2000;
-const ANIM_FRAMES = 300;
+const ANIM_FRAMES = 120;
 
 // --- Emoji cache ---
 
