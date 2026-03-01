@@ -1,9 +1,14 @@
-export type HapticPattern = number[];
+export interface Vibration {
+  duration: number;
+  intensity?: number;
+  delay?: number;
+}
+
+export type HapticPattern = number[] | Vibration[];
 
 export interface HapticPreset {
-  pattern: HapticPattern;
+  pattern: Vibration[];
   description: string;
-  intensity: number;
 }
 
 export type HapticInput = number | string | HapticPattern | HapticPreset;

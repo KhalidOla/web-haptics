@@ -1,4 +1,5 @@
 export type {
+  Vibration,
   HapticPattern,
   HapticPreset,
   HapticInput,

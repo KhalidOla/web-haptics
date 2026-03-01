@@ -1,41 +1,130 @@
 import { defaultPatterns } from "./patterns";
-import type { HapticInput, TriggerOptions, WebHapticsOptions } from "./types";
+import type {
+  HapticInput,
+  TriggerOptions,
+  Vibration,
+  WebHapticsOptions,
+} from "./types";
 
 const TOGGLE_MIN = 16; // ms at intensity 1 (every frame)
 const TOGGLE_MAX = 184; // range above min (0.5 intensity ≈ 100ms)
 const MAX_PHASE_MS = 1000; // browser haptic window limit
 const PWM_CYCLE = 20; // ms per intensity modulation cycle
 
-function modulatePattern(pattern: number[], intensity: number): number[] {
-  if (intensity >= 1) return pattern;
+/** Convert any HapticInput into a Vibration array. */
+function normalizeInput(input: HapticInput): {
+  vibrations: Vibration[];
+} | null {
+  if (typeof input === "number") {
+    return { vibrations: [{ duration: input }] };
+  }
+
+  if (typeof input === "string") {
+    const preset = defaultPatterns[input as keyof typeof defaultPatterns];
+    if (!preset) {
+      console.warn(`[web-haptics] Unknown preset: "${input}"`);
+      return null;
+    }
+    return { vibrations: preset.pattern.map((v) => ({ ...v })) };
+  }
+
+  if (Array.isArray(input)) {
+    if (input.length === 0) return { vibrations: [] };
+
+    // number[] shorthand — alternating on/off
+    if (typeof input[0] === "number") {
+      const nums = input as number[];
+      const vibrations: Vibration[] = [];
+      for (let i = 0; i < nums.length; i += 2) {
+        const delay = i > 0 ? nums[i - 1]! : 0;
+        vibrations.push({
+          ...(delay > 0 && { delay }),
+          duration: nums[i]!,
+        });
+      }
+      return { vibrations };
+    }
+
+    // Vibration[]
+    return { vibrations: (input as Vibration[]).map((v) => ({ ...v })) };
+  }
+
+  // HapticPreset
+  return { vibrations: input.pattern.map((v) => ({ ...v })) };
+}
+
+/**
+ * Apply PWM modulation to a single vibration duration at a given intensity.
+ * Returns the flat on/off segments for this vibration.
+ */
+function modulateVibration(duration: number, intensity: number): number[] {
+  if (intensity >= 1) return [duration];
   if (intensity <= 0) return [];
 
   const onTime = Math.max(1, Math.round(PWM_CYCLE * intensity));
   const offTime = PWM_CYCLE - onTime;
   const result: number[] = [];
 
-  for (let i = 0; i < pattern.length; i++) {
-    const dur = pattern[i]!;
+  let remaining = duration;
+  while (remaining >= PWM_CYCLE) {
+    result.push(onTime);
+    result.push(offTime);
+    remaining -= PWM_CYCLE;
+  }
+  if (remaining > 0) {
+    const remOn = Math.max(1, Math.round(remaining * intensity));
+    result.push(remOn);
+    const remOff = remaining - remOn;
+    if (remOff > 0) result.push(remOff);
+  }
 
-    if (i % 2 === 0) {
-      let remaining = dur;
-      while (remaining >= PWM_CYCLE) {
-        result.push(onTime);
-        result.push(offTime);
-        remaining -= PWM_CYCLE;
-      }
-      if (remaining > 0) {
-        const remOn = Math.max(1, Math.round(remaining * intensity));
-        result.push(remOn);
-        const remOff = remaining - remOn;
-        if (remOff > 0) result.push(remOff);
-      }
-    } else {
+  return result;
+}
+
+/**
+ * Convert Vibration[] to the flat number[] pattern for navigator.vibrate(),
+ * applying per-vibration PWM intensity modulation.
+ */
+function toVibratePattern(
+  vibrations: Vibration[],
+  defaultIntensity: number,
+): number[] {
+  const result: number[] = [];
+
+  for (let i = 0; i < vibrations.length; i++) {
+    const vib = vibrations[i]!;
+    const intensity = Math.max(
+      0,
+      Math.min(1, vib.intensity ?? defaultIntensity),
+    );
+    const delay = vib.delay ?? 0;
+
+    // Prepend delay: merge into trailing off-time or add new gap
+    if (delay > 0) {
       if (result.length > 0 && result.length % 2 === 0) {
-        result[result.length - 1]! += dur;
+        result[result.length - 1]! += delay;
       } else {
-        result.push(dur);
+        if (result.length === 0) result.push(0);
+        result.push(delay);
       }
+    }
+
+    const modulated = modulateVibration(vib.duration, intensity);
+
+    if (modulated.length === 0) {
+      // Zero intensity — treat vibration as silence
+      if (result.length > 0 && result.length % 2 === 0) {
+        result[result.length - 1]! += vib.duration;
+      } else if (vib.duration > 0) {
+        result.push(0);
+        result.push(vib.duration);
+      }
+      continue;
+    }
+
+    // Append modulated vibration segments
+    for (const seg of modulated) {
+      result.push(seg);
     }
   }
 
@@ -64,51 +153,42 @@ export class WebHaptics {
   }
 
   static readonly isSupported: boolean =
-    typeof navigator !== "undefined" && typeof navigator.vibrate === "function";
+    typeof navigator !== "undefined" &&
+    typeof navigator.vibrate === "function";
 
   async trigger(
-    input: HapticInput = [10],
+    input: HapticInput = [{ duration: 10 }],
     options?: TriggerOptions,
   ): Promise<void> {
-    let pattern: number[];
-    let defaultIntensity = 0.5;
+    const normalized = normalizeInput(input);
+    if (!normalized) return;
 
-    if (typeof input === "number") {
-      pattern = [input];
-    } else if (typeof input === "string") {
-      const preset = defaultPatterns[input as keyof typeof defaultPatterns];
-      if (!preset) {
-        console.warn(`[web-haptics] Unknown preset: "${input}"`);
-        return;
-      }
-      pattern = [...preset.pattern];
-      defaultIntensity = preset.intensity;
-    } else if (Array.isArray(input)) {
-      pattern = [...input];
-    } else {
-      pattern = [...input.pattern];
-      defaultIntensity = input.intensity;
-    }
+    const { vibrations } = normalized;
+    if (vibrations.length === 0) return;
 
-    const intensity = Math.max(
+    const defaultIntensity = Math.max(
       0,
-      Math.min(1, options?.intensity ?? defaultIntensity),
+      Math.min(1, options?.intensity ?? 0.5),
     );
 
-    for (let i = 0; i < pattern.length; i++) {
-      if (i % 2 === 0 && pattern[i]! > MAX_PHASE_MS) {
-        pattern[i] = MAX_PHASE_MS;
-      }
-      if (!Number.isFinite(pattern[i]) || pattern[i]! < 0) {
+    // Validate and clamp durations
+    for (const vib of vibrations) {
+      if (vib.duration > MAX_PHASE_MS) vib.duration = MAX_PHASE_MS;
+      if (
+        !Number.isFinite(vib.duration) ||
+        vib.duration < 0 ||
+        (vib.delay !== undefined &&
+          (!Number.isFinite(vib.delay) || vib.delay < 0))
+      ) {
         console.warn(
-          `[web-haptics] Invalid value at index ${i}: ${pattern[i]}. Pattern values must be finite non-negative numbers.`,
+          `[web-haptics] Invalid vibration values. Durations and delays must be finite non-negative numbers.`,
         );
         return;
       }
     }
 
     if (WebHaptics.isSupported) {
-      navigator.vibrate(modulatePattern(pattern, intensity));
+      navigator.vibrate(toVibratePattern(vibrations, defaultIntensity));
     }
 
     if (!WebHaptics.isSupported || this.debug) {
@@ -122,13 +202,16 @@ export class WebHaptics {
       this.stopPattern();
 
       // Fire first click synchronously to stay within user gesture context
-      // (iOS blocks haptics from programmatic clicks outside gesture handlers)
       this.hapticLabel.click();
       if (this.debug && this.audioCtx) {
-        this.playClick(intensity);
+        const firstIntensity = Math.max(
+          0,
+          Math.min(1, vibrations[0]!.intensity ?? defaultIntensity),
+        );
+        this.playClick(firstIntensity);
       }
 
-      await this.runPattern(pattern, intensity);
+      await this.runPattern(vibrations, defaultIntensity);
     }
   }
 
@@ -184,21 +267,33 @@ export class WebHaptics {
     this.patternResolve = null;
   }
 
-  private runPattern(pattern: number[], intensity: number): Promise<void> {
+  private runPattern(
+    vibrations: Vibration[],
+    defaultIntensity: number,
+  ): Promise<void> {
     return new Promise((resolve) => {
       this.patternResolve = resolve;
 
-      const phases: number[] = [];
+      // Build phase boundaries: each vibration has an optional delay then an "on" phase
+      const phases: { end: number; isOn: boolean; intensity: number }[] = [];
       let cumulative = 0;
-      for (const p of pattern) {
-        cumulative += p;
-        phases.push(cumulative);
+      for (const vib of vibrations) {
+        const intensity = Math.max(
+          0,
+          Math.min(1, vib.intensity ?? defaultIntensity),
+        );
+        const delay = vib.delay ?? 0;
+        if (delay > 0) {
+          cumulative += delay;
+          phases.push({ end: cumulative, isOn: false, intensity: 0 });
+        }
+        cumulative += vib.duration;
+        phases.push({ end: cumulative, isOn: true, intensity });
       }
       const totalDuration = cumulative;
 
-      const toggleInterval = TOGGLE_MIN + (1 - intensity) * TOGGLE_MAX;
       let startTime = 0;
-      let lastToggleTime = -1; // -1 signals first click was already fired synchronously
+      let lastToggleTime = -1;
 
       const loop = (time: number) => {
         if (startTime === 0) startTime = time;
@@ -211,22 +306,25 @@ export class WebHaptics {
           return;
         }
 
-        let phaseIndex = 0;
-        for (let i = 0; i < phases.length; i++) {
-          if (elapsed < phases[i]!) {
-            phaseIndex = i;
+        // Find current phase
+        let phase = phases[0]!;
+        for (const p of phases) {
+          if (elapsed < p.end) {
+            phase = p;
             break;
           }
         }
 
-        if (phaseIndex % 2 === 0) {
+        if (phase.isOn) {
+          const toggleInterval =
+            TOGGLE_MIN + (1 - phase.intensity) * TOGGLE_MAX;
+
           if (lastToggleTime === -1) {
-            // Skip first toggle — already fired synchronously
             lastToggleTime = time;
           } else if (time - lastToggleTime >= toggleInterval) {
             this.hapticLabel?.click();
             if (this.debug && this.audioCtx) {
-              this.playClick(intensity);
+              this.playClick(phase.intensity);
             }
             lastToggleTime = time;
           }
@@ -239,7 +337,13 @@ export class WebHaptics {
   }
 
   private playClick(intensity: number): void {
-    if (!this.audioCtx || !this.audioFilter || !this.audioGain || !this.audioBuffer) return;
+    if (
+      !this.audioCtx ||
+      !this.audioFilter ||
+      !this.audioGain ||
+      !this.audioBuffer
+    )
+      return;
 
     const data = this.audioBuffer.getChannelData(0);
     for (let i = 0; i < data.length; i++) {

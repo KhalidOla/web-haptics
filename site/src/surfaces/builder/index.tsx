@@ -1,10 +1,11 @@
 import { useReducer, useRef, useCallback, useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { defaultPatterns } from "web-haptics";
-import type { HapticPreset } from "web-haptics";
+import type { HapticPreset, Vibration } from "web-haptics";
 
 import styles from "./styles.module.scss";
 import { useHaptics } from "../../hooks/useHaptics";
+import { useClickOutside } from "../../hooks/useClickOutside";
 import { CodeBlock } from "../../components/codeblock";
 import { Button } from "../../components/button";
 
@@ -14,12 +15,12 @@ interface Tap {
   id: string;
   position: number;
   duration: number;
+  intensity: number;
 }
 
 interface BuilderState {
   taps: Tap[];
   selectedId: string | null;
-  intensity: number;
 }
 
 type BuilderAction =
@@ -29,8 +30,8 @@ type BuilderAction =
   | { type: "SET_DURATION"; id: string; duration: number }
   | { type: "RESIZE_LEFT"; id: string; position: number }
   | { type: "REMOVE_TAP"; id: string }
-  | { type: "SET_INTENSITY"; intensity: number }
-  | { type: "LOAD_PRESET"; taps: Tap[]; intensity: number };
+  | { type: "SET_TAP_INTENSITY"; id: string; intensity: number }
+  | { type: "LOAD_PRESET"; taps: Tap[] };
 
 // --- Helpers ---
 
@@ -61,37 +62,35 @@ function canFitTap(taps: Tap[], position: number, duration: number): boolean {
   return position >= 0 && position + duration <= 1000;
 }
 
-function tapsToPattern(taps: Tap[]): number[] {
+function tapsToPattern(taps: Tap[]): Vibration[] {
   if (taps.length === 0) return [];
   const sorted = [...taps].sort((a, b) => a.position - b.position);
-  const pattern: number[] = [];
-  let cursor = 0;
-
-  for (const tap of sorted) {
-    const gap = tap.position - cursor;
-    if (gap > 0) {
-      if (pattern.length === 0) pattern.push(0);
-      pattern.push(gap);
-    }
-    pattern.push(tap.duration);
-    cursor = tap.position + tap.duration;
-  }
-  return pattern;
+  return sorted.map((tap, i) => {
+    const prev = sorted[i - 1];
+    const delay = prev
+      ? tap.position - (prev.position + prev.duration)
+      : tap.position;
+    return {
+      ...(delay > 0 && { delay }),
+      duration: tap.duration,
+      intensity: tap.intensity,
+    };
+  });
 }
 
-function patternToTaps(pattern: number[]): Tap[] {
-  const taps: Tap[] = [];
+function patternToTaps(vibs: Vibration[], defaultIntensity = 0.5): Tap[] {
   let cursor = 0;
-  for (let i = 0; i < pattern.length; i++) {
-    const dur = pattern[i];
-    if (i % 2 === 0) {
-      if (dur > 0) taps.push({ id: genId(), position: cursor, duration: dur });
-      cursor += dur;
-    } else {
-      cursor += dur;
-    }
-  }
-  return taps;
+  return vibs.map((v) => {
+    cursor += v.delay ?? 0;
+    const tap: Tap = {
+      id: genId(),
+      position: cursor,
+      duration: v.duration,
+      intensity: v.intensity ?? defaultIntensity,
+    };
+    cursor += v.duration;
+    return tap;
+  });
 }
 
 // --- Reducer ---
@@ -101,7 +100,6 @@ const DEFAULT_DURATION = 50;
 const initialState: BuilderState = {
   taps: patternToTaps(defaultPatterns.success.pattern),
   selectedId: null,
-  intensity: defaultPatterns.success.intensity,
 };
 
 function reducer(state: BuilderState, action: BuilderAction): BuilderState {
@@ -115,6 +113,7 @@ function reducer(state: BuilderState, action: BuilderAction): BuilderState {
         id: genId(),
         position: snapped,
         duration: DEFAULT_DURATION,
+        intensity: 0.5,
       };
       return {
         ...state,
@@ -131,7 +130,10 @@ function reducer(state: BuilderState, action: BuilderAction): BuilderState {
       if (!tap) return state;
       const bounds = getNeighborBounds(state.taps, action.id);
       const clamped = snap(
-        Math.max(bounds.minPos, Math.min(bounds.maxEnd - tap.duration, action.position)),
+        Math.max(
+          bounds.minPos,
+          Math.min(bounds.maxEnd - tap.duration, action.position),
+        ),
       );
       return {
         ...state,
@@ -159,7 +161,12 @@ function reducer(state: BuilderState, action: BuilderAction): BuilderState {
       const tap = state.taps.find((t) => t.id === action.id);
       if (!tap) return state;
       const bounds = getNeighborBounds(state.taps, action.id);
-      const newPos = snap(Math.max(bounds.minPos, Math.min(tap.position + tap.duration - 10, action.position)));
+      const newPos = snap(
+        Math.max(
+          bounds.minPos,
+          Math.min(tap.position + tap.duration - 10, action.position),
+        ),
+      );
       const newDur = tap.position + tap.duration - newPos;
       return {
         ...state,
@@ -176,14 +183,18 @@ function reducer(state: BuilderState, action: BuilderAction): BuilderState {
         selectedId: state.selectedId === action.id ? null : state.selectedId,
       };
 
-    case "SET_INTENSITY":
+    case "SET_TAP_INTENSITY":
       return {
         ...state,
-        intensity: Math.max(0, Math.min(1, action.intensity)),
+        taps: state.taps.map((t) =>
+          t.id === action.id
+            ? { ...t, intensity: Math.max(0, Math.min(1, action.intensity)) }
+            : t,
+        ),
       };
 
     case "LOAD_PRESET":
-      return { taps: action.taps, selectedId: null, intensity: action.intensity };
+      return { taps: action.taps, selectedId: null };
 
     default:
       return state;
@@ -196,13 +207,46 @@ const GRIDLINES = Array.from({ length: 19 }, (_, i) => (i + 1) * 50); // 50, 100
 const LABELS = Array.from({ length: 11 }, (_, i) => i * 100);
 const presets = Object.entries(defaultPatterns) as [string, HapticPreset][];
 
-// --- Trash icon ---
+// --- Delete threshold (distance outside timeline bounds) ---
 
-const TrashIcon = () => (
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-    <path d="M3 4h10M6.5 4V3a1 1 0 011-1h1a1 1 0 011 1v1M5 4v8.5a1 1 0 001 1h4a1 1 0 001-1V4" />
-  </svg>
-);
+const DELETE_THRESHOLD = 80; // px beyond timeline edge
+
+// --- Code generation ---
+
+function generateCode(vibs: Vibration[]): string {
+  if (vibs.length === 0) return "trigger([])";
+
+  const intensities = vibs.map((v) => v.intensity ?? 0.5);
+  const allSame = intensities.every((v) => v === intensities[0]);
+
+  const formatVib = (v: Vibration, showIntensity: boolean) => {
+    const parts: string[] = [];
+    if (v.delay && v.delay > 0) {
+      parts.push(`delay: ${v.delay}`);
+    }
+    parts.push(`duration: ${v.duration}`);
+    if (showIntensity && (v.intensity ?? 0.5) !== 0.5) {
+      parts.push(`intensity: ${v.intensity}`);
+    }
+    return `{ ${parts.join(", ")} }`;
+  };
+
+  if (allSame && intensities[0] === 0.5) {
+    // All default intensity — omit intensity everywhere
+    const items = vibs.map((v) => formatVib(v, false));
+    return `trigger([\n  ${items.join(",\n  ")},\n])`;
+  }
+
+  if (allSame) {
+    // All same non-default — use TriggerOptions
+    const items = vibs.map((v) => formatVib(v, false));
+    return `trigger([\n  ${items.join(",\n  ")},\n], { intensity: ${intensities[0]} })`;
+  }
+
+  // Mixed — per-vibration intensity
+  const items = vibs.map((v) => formatVib(v, true));
+  return `trigger([\n  ${items.join(",\n  ")},\n])`;
+}
 
 // --- Component ---
 
@@ -210,23 +254,33 @@ export const HapticBuilder = () => {
   const [state, dispatch] = useReducer(reducer, initialState);
   const { trigger } = useHaptics();
   const timelineRef = useRef<HTMLDivElement>(null);
+  const { ref: builderRef } = useClickOutside<HTMLDivElement>(() => {
+    dispatch({ type: "SELECT_TAP", id: null });
+  });
   const [playing, setPlaying] = useState(false);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const pendingDeleteIdRef = useRef<string | null>(null);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [activeTapIds, setActiveTapIds] = useState<Set<string>>(new Set());
   const timeoutsRef = useRef<number[]>([]);
 
   const pattern = tapsToPattern(state.taps);
-  const selected = state.taps.find((t) => t.id === state.selectedId);
-
   const totalDuration = state.taps.length
     ? Math.max(...state.taps.map((t) => t.position + t.duration))
     : 0;
 
-  const activePreset = presets.find(
-    ([, p]) =>
-      p.pattern.length === pattern.length &&
-      p.pattern.every((v, i) => v === pattern[i]) &&
-      p.intensity === state.intensity,
-  )?.[0];
+  const activePreset = presets.find(([, p]) => {
+    if (p.pattern.length !== pattern.length) return false;
+    return p.pattern.every((v, i) => {
+      const pv = pattern[i];
+      if (!pv) return false;
+      return (
+        v.duration === pv.duration &&
+        (v.intensity ?? 0.5) === (pv.intensity ?? 0.5) &&
+        (v.delay ?? 0) === (pv.delay ?? 0)
+      );
+    });
+  })?.[0];
 
   // Click empty timeline to add
   const handleTimelineClick = useCallback(
@@ -241,7 +295,7 @@ export const HapticBuilder = () => {
     [trigger],
   );
 
-  // Drag circle to move
+  // Drag circle to move (or drag outside to delete)
   const handleDragStart = useCallback(
     (e: React.PointerEvent, tapId: string) => {
       e.preventDefault();
@@ -256,19 +310,59 @@ export const HapticBuilder = () => {
       const cursorMs = ((e.clientX - rect.left) / rect.width) * 1000;
       const tap = state.taps.find((t) => t.id === tapId);
       const offsetMs = tap ? cursorMs - tap.position : 0;
+      let currentPosition = tap?.position ?? 0;
+
+      // Grab offset so delete-drag doesn't snap circle to cursor
+      const initialTapScreenX =
+        rect.left + ((tap?.position ?? 0) / 1000) * rect.width;
+      const initialTapScreenY = rect.top + rect.height / 2;
+      const grabOffsetX = e.clientX - initialTapScreenX;
+      const grabOffsetY = e.clientY - initialTapScreenY;
 
       const onMove = (me: PointerEvent) => {
-        const position = ((me.clientX - rect.left) / rect.width) * 1000 - offsetMs;
-        dispatch({ type: "MOVE_TAP", id: tapId, position });
+        // Distance from timeline bounds in each direction
+        const distLeft = rect.left - me.clientX;
+        const distRight = me.clientX - rect.right;
+        const distTop = rect.top - me.clientY;
+        const distBottom = me.clientY - rect.bottom;
+        const maxDist = Math.max(distLeft, distRight, distTop, distBottom);
+
+        if (maxDist > DELETE_THRESHOLD) {
+          // Delete mode — tap follows cursor, maintaining grab offset
+          setPendingDeleteId(tapId);
+          pendingDeleteIdRef.current = tapId;
+          const tapHomeX = rect.left + (currentPosition / 1000) * rect.width;
+          const tapHomeY = rect.top + rect.height / 2;
+          setDragOffset({
+            x: me.clientX - grabOffsetX - tapHomeX,
+            y: me.clientY - grabOffsetY - tapHomeY,
+          });
+        } else {
+          // Normal mode — reposition horizontally
+          setPendingDeleteId(null);
+          pendingDeleteIdRef.current = null;
+          setDragOffset({ x: 0, y: 0 });
+          const position =
+            ((me.clientX - rect.left) / rect.width) * 1000 - offsetMs;
+          dispatch({ type: "MOVE_TAP", id: tapId, position });
+          currentPosition = snap(Math.max(0, Math.min(1000, position)));
+        }
       };
       const onUp = () => {
+        if (pendingDeleteIdRef.current === tapId) {
+          dispatch({ type: "REMOVE_TAP", id: tapId });
+          trigger();
+        }
+        setPendingDeleteId(null);
+        pendingDeleteIdRef.current = null;
+        setDragOffset({ x: 0, y: 0 });
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
       };
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
     },
-    [state.taps],
+    [state.taps, trigger],
   );
 
   // Drag resize handle
@@ -324,24 +418,28 @@ export const HapticBuilder = () => {
     [],
   );
 
-  // Custom intensity slider drag
-  const handleSliderDrag = useCallback(
-    (e: React.PointerEvent) => {
+  // Drag intensity from top/bottom edges
+  const handleIntensityDragStart = useCallback(
+    (e: React.PointerEvent, tapId: string, edge: "top" | "bottom") => {
       e.preventDefault();
-      const track = e.currentTarget as HTMLElement;
-      const rect = track.getBoundingClientRect();
+      e.stopPropagation();
+      dispatch({ type: "SELECT_TAP", id: tapId });
 
-      const update = (clientX: number) => {
-        const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-        dispatch({
-          type: "SET_INTENSITY",
-          intensity: Math.round(ratio * 100) / 100,
-        });
+      const container = timelineRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+
+      const onMove = (me: PointerEvent) => {
+        // Map cursor to inset from the dragged edge, then derive intensity
+        const distFromEdge =
+          edge === "top"
+            ? (me.clientY - rect.top) / rect.height
+            : (rect.bottom - me.clientY) / rect.height;
+        const intensity =
+          Math.round(Math.max(0, Math.min(1, 1 - distFromEdge * 2)) * 100) /
+          100;
+        dispatch({ type: "SET_TAP_INTENSITY", id: tapId, intensity });
       };
-
-      update(e.clientX);
-
-      const onMove = (me: PointerEvent) => update(me.clientX);
       const onUp = () => {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
@@ -357,7 +455,7 @@ export const HapticBuilder = () => {
     if (state.taps.length === 0) return;
 
     const pat = tapsToPattern(state.taps);
-    trigger(pat, { intensity: state.intensity });
+    trigger(pat);
     setPlaying(true);
 
     timeoutsRef.current.forEach(clearTimeout);
@@ -388,16 +486,13 @@ export const HapticBuilder = () => {
         setActiveTapIds(new Set());
       }, end),
     );
-  }, [state.taps, state.intensity, trigger]);
+  }, [state.taps, trigger]);
 
   // Keyboard shortcuts
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement) return;
-      if (
-        (e.key === "Delete" || e.key === "Backspace") &&
-        state.selectedId
-      ) {
+      if ((e.key === "Delete" || e.key === "Backspace") && state.selectedId) {
         e.preventDefault();
         dispatch({ type: "REMOVE_TAP", id: state.selectedId });
         trigger();
@@ -415,12 +510,10 @@ export const HapticBuilder = () => {
     return () => timeoutsRef.current.forEach(clearTimeout);
   }, []);
 
-  const code = pattern.length
-    ? `trigger([${pattern.join(", ")}], { intensity: ${state.intensity} })`
-    : `trigger([], { intensity: ${state.intensity} })`;
+  const code = generateCode(pattern);
 
   return (
-    <div className={styles.builder}>
+    <div ref={builderRef} className={styles.builder}>
       {/* Presets */}
       <div className={styles.presets}>
         {presets.map(([name, preset]) => (
@@ -435,8 +528,7 @@ export const HapticBuilder = () => {
               trigger();
               dispatch({
                 type: "LOAD_PRESET",
-                taps: patternToTaps(preset.pattern),
-                intensity: preset.intensity,
+                taps: patternToTaps(preset.pattern, 0.5),
               });
             }}
           >
@@ -462,116 +554,113 @@ export const HapticBuilder = () => {
             />
           ))}
 
-          {/* Tap regions with resize handles */}
-          {state.taps.map((tap) => {
-            // Intensity drives vertical height: 3px at 0 → full at 1
-            const inset = `min(calc(50% - 1.5px), ${(1 - state.intensity) * 50}%)`;
-            return (
-            <div
-              key={`region-${tap.id}`}
-              className={styles.tapRegion}
-              data-selected={tap.id === state.selectedId}
-              style={{
-                left: `${(tap.position / 1000) * 100}%`,
-                width: `${(tap.duration / 1000) * 100}%`,
-                top: inset,
-                bottom: inset,
-              }}
-              onPointerDown={(e) => handleDragStart(e, tap.id)}
-              onClick={(e) => {
-                e.stopPropagation();
-                dispatch({ type: "SELECT_TAP", id: tap.id });
-              }}
-            >
-              <div
-                className={styles.resizeHandleLeft}
-                onPointerDown={(e) => handleResizeLeftStart(e, tap.id)}
-              />
-              <div
-                className={styles.resizeHandle}
-                onPointerDown={(e) => handleResizeStart(e, tap.id)}
-              />
-            </div>
-            );
-          })}
-
-          {/* Tap circles */}
+          {/* Taps (grouped bar + circle) */}
           <AnimatePresence>
-            {state.taps.map((tap) => (
-              <motion.div
-                key={tap.id}
-                className={styles.tapCircle}
-                data-selected={tap.id === state.selectedId}
-                style={{
-                  left: `${(tap.position / 1000) * 100}%`,
-                  top: "50%",
-                  x: "-50%",
-                  y: "-50%",
-                }}
-                initial={{ scale: 0 }}
-                animate={{ scale: activeTapIds.has(tap.id) ? 1.4 : 1 }}
-                exit={{ scale: 0, opacity: 0 }}
-                transition={{
-                  type: "spring",
-                  stiffness: 500,
-                  damping: 25,
-                  scale: activeTapIds.has(tap.id)
-                    ? { type: "spring", stiffness: 600, damping: 15 }
-                    : undefined,
-                }}
-                onPointerDown={(e) => handleDragStart(e, tap.id)}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  dispatch({ type: "SELECT_TAP", id: tap.id });
-                }}
-              />
-            ))}
-          </AnimatePresence>
-
-          {/* Floating controls above selected tap */}
-          <AnimatePresence>
-            {selected && (
-              <motion.div
-                key="floating"
-                className={styles.floatingControls}
-                style={{
-                  left: `${(selected.position / 1000) * 100}%`,
-                }}
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 4 }}
-                transition={{ duration: 0.15 }}
-              >
-                <div className={styles.floatingDuration}>
-                  <input
-                    type="number"
-                    min={10}
-                    max={1000}
-                    step={10}
-                    value={selected.duration}
-                    onClick={(e) => e.stopPropagation()}
-                    onChange={(e) =>
-                      dispatch({
-                        type: "SET_DURATION",
-                        id: selected.id,
-                        duration: parseInt(e.target.value) || 10,
-                      })
-                    }
-                  />
-                  <span>ms</span>
-                </div>
-                <button
-                  className={styles.floatingDelete}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    dispatch({ type: "REMOVE_TAP", id: selected.id });
-                    trigger();
+            {state.taps.map((tap) => {
+              const inset = `min(calc(50% - 1.5px), ${(1 - tap.intensity) * 50}%)`;
+              const isDeleting = pendingDeleteId === tap.id;
+              return (
+                <motion.div
+                  key={tap.id}
+                  style={{
+                    position: "absolute",
+                    left: `${(tap.position / 1000) * 100}%`,
+                    width: `${(tap.duration / 1000) * 100}%`,
+                    top: 0,
+                    bottom: 0,
+                    x: isDeleting ? dragOffset.x : 0,
+                    y: isDeleting ? dragOffset.y : 0,
+                    zIndex: isDeleting ? 9999 : undefined,
+                    pointerEvents: "none",
+                  }}
+                  initial={{ scale: 0.8, opacity: 0 }}
+                  animate={{
+                    scale: 1,
+                    opacity: 1,
+                    x: isDeleting ? dragOffset.x : 0,
+                    y: isDeleting ? dragOffset.y : 0,
+                  }}
+                  exit={{ scale: 0, opacity: 0 }}
+                  transition={{
+                    type: "spring",
+                    stiffness: 500,
+                    damping: 30,
+                    x: { type: "spring", stiffness: 300, damping: 25 },
+                    y: { type: "spring", stiffness: 300, damping: 25 },
                   }}
                 >
-                  <TrashIcon />
-                </button>
-              </motion.div>
-            )}
+                  <div
+                    className={isDeleting ? styles.wobble : undefined}
+                    style={{ position: "absolute", inset: 0 }}
+                  >
+                    {/* Region bar */}
+                    <div
+                      className={styles.tapRegion}
+                      data-selected={tap.id === state.selectedId}
+                      style={{
+                        left: 0,
+                        right: 0,
+                        top: inset,
+                        bottom: inset,
+                        pointerEvents: "auto",
+                      }}
+                      onPointerDown={(e) => handleDragStart(e, tap.id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        dispatch({ type: "SELECT_TAP", id: tap.id });
+                      }}
+                    >
+                      <div
+                        className={styles.resizeHandleLeft}
+                        onPointerDown={(e) => handleResizeLeftStart(e, tap.id)}
+                      />
+                      <div
+                        className={styles.resizeHandle}
+                        onPointerDown={(e) => handleResizeStart(e, tap.id)}
+                      />
+                      <div
+                        className={styles.intensityHandleTop}
+                        onPointerDown={(e) =>
+                          handleIntensityDragStart(e, tap.id, "top")
+                        }
+                      />
+                      <div
+                        className={styles.intensityHandleBottom}
+                        onPointerDown={(e) =>
+                          handleIntensityDragStart(e, tap.id, "bottom")
+                        }
+                      />
+                    </div>
+
+                    {/* Circle */}
+                    <motion.div
+                      className={styles.tapCircle}
+                      data-selected={tap.id === state.selectedId}
+                      style={{
+                        left: 0,
+                        x: "-50%",
+                        y: "-50%",
+                        pointerEvents: "auto",
+                      }}
+                      animate={{ scale: activeTapIds.has(tap.id) ? 1.4 : 1 }}
+                      transition={{
+                        type: "spring",
+                        stiffness: 500,
+                        damping: 25,
+                        scale: activeTapIds.has(tap.id)
+                          ? { type: "spring", stiffness: 600, damping: 15 }
+                          : undefined,
+                      }}
+                      onPointerDown={(e) => handleDragStart(e, tap.id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        dispatch({ type: "SELECT_TAP", id: tap.id });
+                      }}
+                    />
+                  </div>
+                </motion.div>
+              );
+            })}
           </AnimatePresence>
 
           {/* Playhead */}
@@ -597,27 +686,6 @@ export const HapticBuilder = () => {
             <span key={ms}>{ms}</span>
           ))}
         </div>
-      </div>
-
-      {/* Intensity */}
-      <div className={styles.intensityRow}>
-        <label>Intensity</label>
-        <div
-          className={styles.sliderTrack}
-          onPointerDown={handleSliderDrag}
-        >
-          <div
-            className={styles.sliderFill}
-            style={{ width: `${state.intensity * 100}%` }}
-          />
-          <div
-            className={styles.sliderThumb}
-            style={{ left: `${state.intensity * 100}%` }}
-          />
-        </div>
-        <span className={styles.intensityValue}>
-          {state.intensity.toFixed(2)}
-        </span>
       </div>
 
       {/* Code output */}

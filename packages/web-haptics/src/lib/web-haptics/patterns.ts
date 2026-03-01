@@ -2,23 +2,26 @@ import type { HapticPreset } from "./types";
 
 export const defaultPatterns = {
   success: {
-    pattern: [50, 50, 50],
+    pattern: [{ duration: 50 }, { delay: 50, duration: 50 }],
     description: "A series of taps indicating success.",
-    intensity: 0.5,
   },
   nudge: {
-    pattern: [80, 100, 200],
+    pattern: [
+      { duration: 80, intensity: 0.8 },
+      { delay: 80, duration: 50, intensity: 0.3 },
+    ],
     description: "A series of taps indicating a nudge.",
-    intensity: 0.5,
   },
   error: {
-    pattern: [50, 50, 50, 50, 50],
+    pattern: [
+      { duration: 50, intensity: 0.75 },
+      { delay: 50, duration: 50, intensity: 0.75 },
+      { delay: 50, duration: 50, intensity: 0.75 },
+    ],
     description: "A series of taps indicating a warning or error.",
-    intensity: 0.75,
   },
   buzz: {
-    pattern: [1000],
+    pattern: [{ duration: 1000, intensity: 1 }],
     description: "A long vibration.",
-    intensity: 1,
   },
 } as const satisfies Record<string, HapticPreset>;
